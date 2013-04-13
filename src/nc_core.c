@@ -46,7 +46,7 @@ core_calc_connections(struct context *ctx)
 }
 
 static struct context *
-core_ctx_create(struct instance *nci)
+core_ctx_create(struct instance *nci, bool short_circuit)
 {
     rstatus_t status;
     struct context *ctx;
@@ -79,6 +79,10 @@ core_ctx_create(struct instance *nci)
         conf_destroy(ctx->cf);
         nc_free(ctx);
         return NULL;
+    }
+
+    if (short_circuit) {
+        return ctx;
     }
 
     /*
@@ -156,7 +160,7 @@ core_ctx_destroy(struct context *ctx)
 }
 
 struct context *
-core_start(struct instance *nci)
+core_start(struct instance *nci, bool short_circuit)
 {
     struct context *ctx;
 
@@ -164,7 +168,7 @@ core_start(struct instance *nci)
     msg_init();
     conn_init();
 
-    ctx = core_ctx_create(nci);
+    ctx = core_ctx_create(nci, short_circuit);
     if (ctx != NULL) {
         nci->ctx = ctx;
         return ctx;
