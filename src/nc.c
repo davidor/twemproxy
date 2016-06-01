@@ -51,7 +51,6 @@ static int test_conf;
 static int daemonize;
 static int describe_stats;
 static int show_key_to_server_map;
-static char *key;
 
 static struct option long_options[] = {
     { "help",           no_argument,        NULL,   'h' },
@@ -59,6 +58,7 @@ static struct option long_options[] = {
     { "test-conf",      no_argument,        NULL,   't' },
     { "daemonize",      no_argument,        NULL,   'd' },
     { "describe-stats", no_argument,        NULL,   'D' },
+    { "key",            no_argument,        NULL,   'k' },
     { "verbose",        required_argument,  NULL,   'v' },
     { "output",         required_argument,  NULL,   'o' },
     { "conf-file",      required_argument,  NULL,   'c' },
@@ -67,11 +67,10 @@ static struct option long_options[] = {
     { "stats-addr",     required_argument,  NULL,   'a' },
     { "pid-file",       required_argument,  NULL,   'p' },
     { "mbuf-size",      required_argument,  NULL,   'm' },
-    { "key",            required_argument,  NULL,   'k' },
     { NULL,             0,                  NULL,    0  }
 };
 
-static char short_options[] = "hVtdDv:o:c:s:i:a:p:m:k:";
+static char short_options[] = "hVtdDkv:o:c:s:i:a:p:m:";
 
 static rstatus_t
 nc_daemonize(int dump_core)
@@ -215,7 +214,8 @@ nc_show_usage(void)
         "  -V, --version          : show version and exit" CRLF
         "  -t, --test-conf        : test configuration for syntax errors and exit" CRLF
         "  -d, --daemonize        : run as a daemon" CRLF
-        "  -D, --describe-stats   : print stats description and exit");
+        "  -D, --describe-stats   : print stats description and exit" CRLF
+        "  -k, --keys             : print key-server mappings");
     log_stderr(
         "  -v, --verbose=N        : set logging level (default: %d, min: %d, max: %d)" CRLF
         "  -o, --output=S         : set logging file (default: %s)" CRLF
@@ -225,7 +225,6 @@ nc_show_usage(void)
         "  -i, --stats-interval=N : set stats aggregation interval in msec (default: %d msec)" CRLF
         "  -p, --pid-file=S       : set pid file (default: %s)" CRLF
         "  -m, --mbuf-size=N      : set size of mbuf chunk in bytes (default: %d bytes)" CRLF
-        "  -k, --key=S            : print server of this key string and exit" CRLF
         "",
         NC_LOG_DEFAULT, NC_LOG_MIN, NC_LOG_MAX,
         NC_LOG_PATH != NULL ? NC_LOG_PATH : "stderr",
@@ -411,7 +410,6 @@ nc_get_options(int argc, char **argv, struct instance *nci)
 
         case 'k':
             show_key_to_server_map = 1;
-            key = optarg;
             break;
 
         case '?':
@@ -548,24 +546,63 @@ nc_run(struct instance *nci)
 }
 
 static void
-nc_show_key(struct instance *nci)
+nc_show_key_mapping(struct context *ctx, uint8_t *key)
 {
-    struct context *ctx;
+    struct server_pool *pool;
     struct server *server;
     uint32_t i;
+
+    for (i = 0; i < array_n(&ctx->pool); i++) {
+        pool = array_get(&ctx->pool, i);
+        server = server_pool_server(pool, key, nc_strlen(key));
+        log_stderr("pool: %.*s server: %.*s", pool->name.len,
+          pool->name.data, server->pname.len, server->pname.data);
+    }
+}
+
+static void
+nc_show_keys(struct instance *nci)
+{
+    struct context *ctx;
+    char input[MBUF_SIZE];
+    char key[MBUF_SIZE];
+    uint32_t i;
+    ssize_t input_length;
+    uint32_t key_index = 0;
 
     ctx = core_start(nci, true);
     if (ctx == NULL) {
         return;
     }
 
-    for (i = 0; i < array_n(&ctx->pool); i++) {
-        struct server_pool *pool;
+    while ((input_length = nc_read(STDIN_FILENO, input, MBUF_SIZE - 1)) != 0) {
+        if (input_length < 0) {
+            log_stderr("Error while trying to read keys. Exiting...");
+            break;
+        }
 
-        pool = array_get(&ctx->pool, i);
-        server = server_pool_server(pool, key, nc_strlen(key));
+        for (i = 0; i < input_length; i++) {
+            if (input[i] != '\n' && input[i] != '\r') {
+                key[key_index++] = input[i];
+            }
+            else if (key_index > 0) {
+              key[key_index] = '\0';
+              if (key_index > MBUF_SIZE) {
+                  log_stderr("Length of the key is greater than allowed.");
+              }
+              else {
+                  nc_show_key_mapping(ctx, key);
+              }
+              memset(key, 0, sizeof(key));
+              key_index = 0;
+            }
+        }
+    }
 
-        log_stderr("pool: %.*s server: %.*s", pool->name.len, pool->name.data, server->pname.len, server->pname.data);
+    // If the input does not end with '\n' or '\r'
+    if (key_index != 0 && key_index < MBUF_SIZE) {
+        key[key_index] = '\0';
+        nc_show_key_mapping(ctx, key);
     }
 }
 
@@ -610,7 +647,7 @@ main(int argc, char **argv)
     }
 
     if (show_key_to_server_map) {
-        nc_show_key(&nci);
+        nc_show_keys(&nci);
         exit(0);
     }
 
